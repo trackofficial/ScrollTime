@@ -1,3 +1,11 @@
 <resources>
-    <string name="app_name">ScrollTime</string>
+    <string name="app_name">Scroll Time</string>
+
+    <!-- Описание службы доступности (обязательно!) -->
+    <string name="service_description">Служба отслеживания времени использования приложений и блокировки Shorts/Reels</string>
+
+    <!-- Дополнительные строки (опционально) -->
+    <string name="settings_title">Настройки</string>
+    <string name="permission_required">Требуется разрешение</string>
+    <string name="accessibility_required">Для работы приложения требуется включить службу доступности</string>
 </resources>

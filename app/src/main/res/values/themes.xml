@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.ScrollTime" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.ScrollTime" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <!-- Цвет ползунков -->
+        <item name="colorControlActivated">@color/white</item>  <!-- Активный цвет -->
+        <item name="colorControlNormal">@color/grey</item>     <!-- Неактивный цвет -->
+    </style>
+    <style name="Theme.AppStarting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/black</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/app_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.ScrollTime</item>
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
 </resources>
