@@ -1,7 +1,7 @@
 <img width="128" height="128" alt="logo_scrolltime" src="https://github.com/user-attachments/assets/3f71115f-4446-4a9d-b90a-9ceb56e11adc" />
 
 
-#### Scroll Time is an Android application that helps you control the time spent watching short videos (YouTube Shorts, TikTok Reels, Instagram Reels). The application works through the accessibility service and does not require root permissions.
+#### Scroll Time is an Android application that helps you control the time spent watching short videos (YouTube Shorts, TikTok, Instagram Reels). The application works through the accessibility service and does not require root permissions.
 
 
 ### Components
