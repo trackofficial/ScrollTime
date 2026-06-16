@@ -1,3 +1,5 @@
+<img width="128" height="128" alt="logo_scrolltime" src="https://github.com/user-attachments/assets/3f71115f-4446-4a9d-b90a-9ceb56e11adc" />
+
 ## Description
 #### Scroll Time is an Android application that helps you control the time spent watching short videos (YouTube Shorts, TikTok Reels, Instagram Reels). The application works through the accessibility service and does not require root permissions.
 
@@ -52,21 +54,6 @@
 | `SYSTEM_ALERT_WINDOW` | Displaying on top of other windows |
 | `BIND_ACCESSIBILITY_SERVICE` | Accessibility service for screen analysis |
 | `FOREGROUND_SERVICE` | Background operation of the service |
-
-### The blocking algorithm
-
-```
-1. Checking
-the short limit
-2. If exceeded → swipe down
-   ↓
-3. Notification display
-   ↓
-4. If you try to open Shorts → lock it immediately.
-   ↓
-5. Checking the total limit
-
-6. If exceeded → simulate the "Back" button
 
 7. Blocking the entire app
 ``
