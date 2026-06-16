@@ -55,5 +55,3 @@
 | `BIND_ACCESSIBILITY_SERVICE` | Accessibility service for screen analysis |
 | `FOREGROUND_SERVICE` | Background operation of the service |
 
-7. Blocking the entire app
-``
