@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -18,6 +19,7 @@ import androidx.core.content.ContextCompat
 class LogTrackingService : AccessibilityService() {
 
     private lateinit var timeManager: TimeManager
+    private lateinit var prefs: SharedPreferences
     private val handler = Handler(Looper.getMainLooper())
     private var checkRunnable: Runnable? = null
     private var timerRunnable: Runnable? = null
@@ -40,35 +42,47 @@ class LogTrackingService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         timeManager = TimeManager(this)
+        prefs = getSharedPreferences("app_settings", MODE_PRIVATE)
         createNotificationChannel()
         Log.d("Tracker", "Service started")
+    }
+
+    private fun getAppConfig(packageName: String): AppConfig? {
+        val app = AppList.apps.find { it.packageName == packageName } ?: return null
+        val dailyLimit = prefs.getInt("$packageName:daily_limit", app.dailyLimitMinutes)
+        val shortsLimit = prefs.getInt("$packageName:shorts_limit", app.shortsLimitMinutes)
+        val enabled = prefs.getBoolean("$packageName:enabled", app.isEnabled)
+        return app.copy(
+            dailyLimitMinutes = dailyLimit,
+            shortsLimitMinutes = shortsLimit,
+            isEnabled = enabled
+        )
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
 
-        val appConfig = AppList.apps.find { it.packageName == packageName } ?: return
+        val appConfig = getAppConfig(packageName) ?: return
         if (!appConfig.isEnabled) return
 
         when (packageName) {
-            "com.google.android.youtube" -> handleYouTube(packageName)
-            "com.zhiliaoapp.musically" -> handleTikTok(packageName)
-            "com.instagram.android" -> handleInstagram(packageName)
+            "com.google.android.youtube" -> handleYouTube(packageName, appConfig)
+            "com.zhiliaoapp.musically" -> handleTikTok(packageName, appConfig)
+            "com.instagram.android" -> handleInstagram(packageName, appConfig)
         }
     }
 
-    private fun handleTikTok(packageName: String) {
+    private fun handleTikTok(packageName: String, appConfig: AppConfig) {
         val rootNode = rootInActiveWindow ?: return
         val isReels = isTikTokReels(rootNode)
         Log.d("Tracker", "TikTok: ${if (isReels) "REELS" else "Regular"}")
-        processAppUsage(packageName, isReels)
+        processAppUsage(packageName, isReels, appConfig)
     }
 
-    private fun handleYouTube(packageName: String) {
+    private fun handleYouTube(packageName: String, appConfig: AppConfig) {
         val rootNode = rootInActiveWindow ?: return
 
-        val appConfig = AppList.apps.find { it.packageName == packageName }
-        if (appConfig != null && timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
+        if (timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
             isAppBlocked = true
             showNotification(
                 "App limit exceeded",
@@ -82,14 +96,11 @@ class LogTrackingService : AccessibilityService() {
         if (!isShorts) {
             Log.d("Tracker", "YouTube: Regular video - not tracking")
             notificationShown = false
-            // Если мы были в блокировке, но вышел из Shorts, снимаем флаг блокировки,
-            // но только если лимит ещё не превышен (это уже сделано, но мы можем сбросить принудительно)
-            // Чтобы не спамить, сбрасываем isClosingInProgress
             isClosingInProgress = false
 
             if (isShortsBlocked) {
                 val shortsTime = timeManager.getShortsTimeForApp(packageName)
-                if (appConfig != null && shortsTime < appConfig.shortsLimitMinutes * 60) {
+                if (shortsTime < appConfig.shortsLimitMinutes * 60) {
                     isShortsBlocked = false
                     Log.d("Tracker", "Shorts block removed")
                 }
@@ -111,7 +122,7 @@ class LogTrackingService : AccessibilityService() {
             if (!notificationShown) {
                 showNotification(
                     "Shorts limit exceeded",
-                    "You have used ${appConfig?.shortsLimitMinutes ?: 5} minutes of Shorts"
+                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts"
                 )
                 notificationShown = true
             }
@@ -120,17 +131,25 @@ class LogTrackingService : AccessibilityService() {
 
         Log.d("Tracker", "YouTube: SHORTS")
         notificationShown = false
-        processAppUsage(packageName, true)
+        processAppUsage(packageName, true, appConfig)
     }
 
-    private fun handleInstagram(packageName: String) {
+    private fun handleInstagram(packageName: String, appConfig: AppConfig) {
         val rootNode = rootInActiveWindow ?: return
         val isReels = isInstagramReels(rootNode)
         Log.d("Tracker", "Instagram: ${if (isReels) "REELS" else "Regular"}")
-        processAppUsage(packageName, isReels)
+        processAppUsage(packageName, isReels, appConfig)
     }
 
     private fun isTikTokReels(node: AccessibilityNodeInfo): Boolean {
+        var hasPlayer = false
+        var hasReelIndicator = false
+        var hasFeed = false
+        var hasHorizontalControls = false
+        var hasLike = false
+        var hasComment = false
+        var hasShare = false
+
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(node)
 
@@ -138,17 +157,62 @@ class LogTrackingService : AccessibilityService() {
             val current = queue.removeFirst()
 
             val viewId = current.viewIdResourceName ?: ""
+            val className = current.className?.toString() ?: ""
+            val text = current.text?.toString() ?: ""
+            val desc = current.contentDescription?.toString() ?: ""
+
             if (viewId.contains("video", ignoreCase = true) ||
-                viewId.contains("reel", ignoreCase = true) ||
-                viewId.contains("short", ignoreCase = true)) {
-                return true
+                viewId.contains("player", ignoreCase = true) ||
+                className.contains("SurfaceView") ||
+                className.contains("VideoView") ||
+                className.contains("TextureView")) {
+                hasPlayer = true
+            }
+
+            if (viewId.contains("reel", ignoreCase = true) ||
+                viewId.contains("short", ignoreCase = true) ||
+                text.contains("reel", ignoreCase = true) ||
+                desc.contains("reel", ignoreCase = true)) {
+                hasReelIndicator = true
+            }
+
+            if (viewId.contains("feed", ignoreCase = true) ||
+                viewId.contains("browse", ignoreCase = true) ||
+                viewId.contains("recycler", ignoreCase = true) ||
+                viewId.contains("list", ignoreCase = true) ||
+                text.contains("For You", ignoreCase = true) ||
+                text.contains("Following", ignoreCase = true)) {
+                hasFeed = true
+            }
+
+            if (viewId.contains("seek", ignoreCase = true) ||
+                viewId.contains("progress", ignoreCase = true) ||
+                className.contains("SeekBar") ||
+                className.contains("ProgressBar")) {
+                hasHorizontalControls = true
+            }
+
+            val lowerDesc = desc.lowercase()
+            val lowerText = text.lowercase()
+            val lowerId = viewId.lowercase()
+            if (lowerDesc.contains("лайк") || lowerText.contains("like") || lowerId.contains("like")) {
+                hasLike = true
+            }
+            if (lowerDesc.contains("коммент") || lowerText.contains("comment") || lowerId.contains("comment")) {
+                hasComment = true
+            }
+            if (lowerDesc.contains("поделиться") || lowerText.contains("share") || lowerId.contains("share")) {
+                hasShare = true
             }
 
             for (i in 0 until current.childCount) {
                 current.getChild(i)?.let { queue.add(it) }
             }
         }
-        return false
+
+        val isReels = hasPlayer && hasReelIndicator && ( (hasLike && hasComment && hasShare) || !hasHorizontalControls ) && !hasFeed
+        Log.d("Tracker", "isReels: $isReels, hasPlayer: $hasPlayer, hasReelIndicator: $hasReelIndicator, hasFeed: $hasFeed, hasHorizontalControls: $hasHorizontalControls, like: $hasLike, comment: $hasComment, share: $hasShare")
+        return isReels
     }
 
     private fun isYouTubeShorts(node: AccessibilityNodeInfo): Boolean {
@@ -158,6 +222,7 @@ class LogTrackingService : AccessibilityService() {
         var hasLike = false
         var hasDislike = false
         var hasShare = false
+        var hasFeed = false
 
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(node)
@@ -185,6 +250,15 @@ class LogTrackingService : AccessibilityService() {
                         !viewId.contains("player", ignoreCase = true) &&
                         !viewId.contains("video", ignoreCase = true))) {
                 hasShortsIndicator = true
+            }
+
+            if (viewId.contains("browse", ignoreCase = true) ||
+                viewId.contains("feed", ignoreCase = true) ||
+                viewId.contains("shelf", ignoreCase = true) ||
+                viewId.contains("recycler", ignoreCase = true) ||
+                text.contains("For you", ignoreCase = true) ||
+                text.contains("Following", ignoreCase = true)) {
+                hasFeed = true
             }
 
             if (viewId.contains("seek", ignoreCase = true) ||
@@ -216,33 +290,85 @@ class LogTrackingService : AccessibilityService() {
             }
         }
 
-        val isShorts = hasPlayer && hasShortsIndicator && ( (hasLike && hasDislike && hasShare) || !hasHorizontalControls )
-
-        Log.d("Tracker", "isShorts: $isShorts, hasPlayer: $hasPlayer, hasShortsIndicator: $hasShortsIndicator, hasHorizontalControls: $hasHorizontalControls, like: $hasLike, dislike: $hasDislike, share: $hasShare")
+        val isShorts = hasPlayer && hasShortsIndicator && ( (hasLike && hasDislike && hasShare) || !hasHorizontalControls ) && !hasFeed
+        Log.d("Tracker", "isShorts: $isShorts, hasPlayer: $hasPlayer, hasShortsIndicator: $hasShortsIndicator, hasFeed: $hasFeed, hasHorizontalControls: $hasHorizontalControls, like: $hasLike, dislike: $hasDislike, share: $hasShare")
         return isShorts
     }
 
     private fun isInstagramReels(node: AccessibilityNodeInfo): Boolean {
+        var hasPlayer = false
+        var hasReelIndicator = false
+        var hasFeed = false
+        var hasHorizontalControls = false
+        var hasLike = false
+        var hasComment = false
+        var hasShare = false
+
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(node)
 
         while (queue.isNotEmpty()) {
             val current = queue.removeFirst()
 
+            val viewId = current.viewIdResourceName ?: ""
+            val className = current.className?.toString() ?: ""
             val text = current.text?.toString() ?: ""
-            if (text.contains("reel", ignoreCase = true)) {
-                return true
+            val desc = current.contentDescription?.toString() ?: ""
+
+            if (viewId.contains("video", ignoreCase = true) ||
+                viewId.contains("player", ignoreCase = true) ||
+                className.contains("SurfaceView") ||
+                className.contains("VideoView") ||
+                className.contains("TextureView")) {
+                hasPlayer = true
+            }
+
+            if (viewId.contains("reel", ignoreCase = true) ||
+                text.contains("reel", ignoreCase = true) ||
+                desc.contains("reel", ignoreCase = true)) {
+                hasReelIndicator = true
+            }
+
+            if (viewId.contains("feed", ignoreCase = true) ||
+                viewId.contains("browse", ignoreCase = true) ||
+                viewId.contains("recycler", ignoreCase = true) ||
+                text.contains("Home", ignoreCase = true) ||
+                text.contains("Search", ignoreCase = true)) {
+                hasFeed = true
+            }
+
+            if (viewId.contains("seek", ignoreCase = true) ||
+                viewId.contains("progress", ignoreCase = true) ||
+                className.contains("SeekBar") ||
+                className.contains("ProgressBar")) {
+                hasHorizontalControls = true
+            }
+
+            val lowerDesc = desc.lowercase()
+            val lowerText = text.lowercase()
+            val lowerId = viewId.lowercase()
+            if (lowerDesc.contains("лайк") || lowerText.contains("like") || lowerId.contains("like")) {
+                hasLike = true
+            }
+            if (lowerDesc.contains("коммент") || lowerText.contains("comment") || lowerId.contains("comment")) {
+                hasComment = true
+            }
+            if (lowerDesc.contains("поделиться") || lowerText.contains("share") || lowerId.contains("share")) {
+                hasShare = true
             }
 
             for (i in 0 until current.childCount) {
                 current.getChild(i)?.let { queue.add(it) }
             }
         }
-        return false
+
+        val isReels = hasPlayer && hasReelIndicator && ( (hasLike && hasComment && hasShare) || !hasHorizontalControls ) && !hasFeed
+        Log.d("Tracker", "isReels: $isReels, hasPlayer: $hasPlayer, hasReelIndicator: $hasReelIndicator, hasFeed: $hasFeed, hasHorizontalControls: $hasHorizontalControls, like: $hasLike, comment: $hasComment, share: $hasShare")
+        return isReels
     }
 
-    private fun processAppUsage(packageName: String, isShorts: Boolean) {
-        val appConfig = AppList.apps.find { it.packageName == packageName } ?: return
+    private fun processAppUsage(packageName: String, isShorts: Boolean, appConfig: AppConfig) {
+        if (isAppBlocked) return
 
         if (timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
             isAppBlocked = true
@@ -291,8 +417,8 @@ class LogTrackingService : AccessibilityService() {
 
             if (isShorts) {
                 Log.d("Tracker", "Started tracking SHORTS: $packageName")
-                startSimpleTimer(packageName)
-                startPeriodicCheck(packageName)
+                startSimpleTimer(packageName, appConfig)
+                startPeriodicCheck(packageName, appConfig)
             }
 
         } else if (session.isShorts != isShorts) {
@@ -310,12 +436,12 @@ class LogTrackingService : AccessibilityService() {
             session.isShorts = isShorts
 
             if (isShorts) {
-                startSimpleTimer(packageName)
+                startSimpleTimer(packageName, appConfig)
             }
         }
     }
 
-    private fun startSimpleTimer(packageName: String) {
+    private fun startSimpleTimer(packageName: String, appConfig: AppConfig) {
         if (isAppBlocked) return
 
         stopSimpleTimer()
@@ -333,8 +459,7 @@ class LogTrackingService : AccessibilityService() {
 
                 val shortsTime = timeManager.getShortsTimeForApp(packageName)
 
-                val appConfig = AppList.apps.find { it.packageName == packageName }
-                if (appConfig != null && shortsTime >= appConfig.shortsLimitMinutes * 60) {
+                if (shortsTime >= appConfig.shortsLimitMinutes * 60) {
                     isShortsBlocked = true
                     closeShortsVideo()
                     if (!notificationShown) {
@@ -364,12 +489,12 @@ class LogTrackingService : AccessibilityService() {
         timerRunnable = null
     }
 
-    private fun startPeriodicCheck(packageName: String) {
+    private fun startPeriodicCheck(packageName: String, appConfig: AppConfig) {
         checkRunnable?.let { handler.removeCallbacks(it) }
         checkRunnable = object : Runnable {
             override fun run() {
                 if (!isAppBlocked) {
-                    checkAndBlockIfNeeded(packageName)
+                    checkAndBlockIfNeeded(packageName, appConfig)
                 }
                 handler.postDelayed(this, 5000)
             }
@@ -377,10 +502,8 @@ class LogTrackingService : AccessibilityService() {
         handler.post(checkRunnable!!)
     }
 
-    private fun checkAndBlockIfNeeded(packageName: String) {
+    private fun checkAndBlockIfNeeded(packageName: String, appConfig: AppConfig) {
         if (isAppBlocked) return
-
-        val appConfig = AppList.apps.find { it.packageName == packageName } ?: return
 
         if (timeManager.isShortsLimitExceeded(packageName, appConfig.shortsLimitMinutes)) {
             isShortsBlocked = true
