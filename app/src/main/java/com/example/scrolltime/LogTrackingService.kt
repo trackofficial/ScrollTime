@@ -1,7 +1,6 @@
 package com.example.scrolltime
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -25,10 +24,7 @@ class LogTrackingService : AccessibilityService() {
     private var timerRunnable: Runnable? = null
     private var isTimerRunning = false
     private var isShortsBlocked = false
-    private var isAppBlocked = false
     private var notificationShown = false
-    private var isClosingInProgress = false
-    private var lastCloseTime = 0L
 
     private data class TrackingSession(
         val packageName: String,
@@ -82,21 +78,11 @@ class LogTrackingService : AccessibilityService() {
     private fun handleYouTube(packageName: String, appConfig: AppConfig) {
         val rootNode = rootInActiveWindow ?: return
 
-        if (timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
-            isAppBlocked = true
-            showNotification(
-                "App limit exceeded",
-                "You have used ${appConfig.dailyLimitMinutes} minutes in YouTube"
-            )
-            return
-        }
-
         val isShorts = isYouTubeShorts(rootNode)
 
         if (!isShorts) {
             Log.d("Tracker", "YouTube: Regular video - not tracking")
             notificationShown = false
-            isClosingInProgress = false
 
             if (isShortsBlocked) {
                 val shortsTime = timeManager.getShortsTimeForApp(packageName)
@@ -115,14 +101,12 @@ class LogTrackingService : AccessibilityService() {
             }
             return
         }
-
         if (isShortsBlocked) {
-            Log.d("Tracker", "Shorts blocked - closing only the Shorts video")
-            closeShortsVideo()
+            Log.d("Tracker", "Shorts blocked - showing notification only")
             if (!notificationShown) {
                 showNotification(
                     "Shorts limit exceeded",
-                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts"
+                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts. Timer stopped."
                 )
                 notificationShown = true
             }
@@ -140,7 +124,6 @@ class LogTrackingService : AccessibilityService() {
         Log.d("Tracker", "Instagram: ${if (isReels) "REELS" else "Regular"}")
         processAppUsage(packageName, isReels, appConfig)
     }
-
     private fun isTikTokReels(node: AccessibilityNodeInfo): Boolean {
         var hasPlayer = false
         var hasReelIndicator = false
@@ -294,7 +277,6 @@ class LogTrackingService : AccessibilityService() {
         Log.d("Tracker", "isShorts: $isShorts, hasPlayer: $hasPlayer, hasShortsIndicator: $hasShortsIndicator, hasFeed: $hasFeed, hasHorizontalControls: $hasHorizontalControls, like: $hasLike, dislike: $hasDislike, share: $hasShare")
         return isShorts
     }
-
     private fun isInstagramReels(node: AccessibilityNodeInfo): Boolean {
         var hasPlayer = false
         var hasReelIndicator = false
@@ -368,24 +350,21 @@ class LogTrackingService : AccessibilityService() {
     }
 
     private fun processAppUsage(packageName: String, isShorts: Boolean, appConfig: AppConfig) {
-        if (isAppBlocked) return
-
         if (timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
-            isAppBlocked = true
             showNotification(
                 "App limit exceeded",
-                "You have used ${appConfig.dailyLimitMinutes} minutes in $packageName"
+                "You have used ${appConfig.dailyLimitMinutes} minutes in $packageName. Timer stopped."
             )
             return
         }
 
         if (isShorts && timeManager.isShortsLimitExceeded(packageName, appConfig.shortsLimitMinutes)) {
             isShortsBlocked = true
-            closeShortsVideo()
+            stopSimpleTimer()
             if (!notificationShown) {
                 showNotification(
                     "Shorts limit exceeded",
-                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts"
+                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts. Timer stopped."
                 )
                 notificationShown = true
             }
@@ -393,11 +372,10 @@ class LogTrackingService : AccessibilityService() {
         }
 
         if (isShorts && isShortsBlocked) {
-            closeShortsVideo()
             if (!notificationShown) {
                 showNotification(
                     "Shorts limit exceeded",
-                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts"
+                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts. Timer stopped."
                 )
                 notificationShown = true
             }
@@ -442,15 +420,13 @@ class LogTrackingService : AccessibilityService() {
     }
 
     private fun startSimpleTimer(packageName: String, appConfig: AppConfig) {
-        if (isAppBlocked) return
-
         stopSimpleTimer()
         isTimerRunning = true
         Log.d("Tracker", "Timer started for: $packageName")
 
         timerRunnable = object : Runnable {
             override fun run() {
-                if (!isTimerRunning || isAppBlocked) {
+                if (!isTimerRunning) {
                     return
                 }
 
@@ -461,15 +437,14 @@ class LogTrackingService : AccessibilityService() {
 
                 if (shortsTime >= appConfig.shortsLimitMinutes * 60) {
                     isShortsBlocked = true
-                    closeShortsVideo()
+                    stopSimpleTimer()
                     if (!notificationShown) {
                         showNotification(
                             "Shorts limit exceeded",
-                            "You have used ${appConfig.shortsLimitMinutes} minutes"
+                            "You have used ${appConfig.shortsLimitMinutes} minutes. Timer stopped."
                         )
                         notificationShown = true
                     }
-                    stopSimpleTimer()
                     return
                 }
 
@@ -493,9 +468,7 @@ class LogTrackingService : AccessibilityService() {
         checkRunnable?.let { handler.removeCallbacks(it) }
         checkRunnable = object : Runnable {
             override fun run() {
-                if (!isAppBlocked) {
-                    checkAndBlockIfNeeded(packageName, appConfig)
-                }
+                checkAndBlockIfNeeded(packageName, appConfig)
                 handler.postDelayed(this, 5000)
             }
         }
@@ -503,15 +476,15 @@ class LogTrackingService : AccessibilityService() {
     }
 
     private fun checkAndBlockIfNeeded(packageName: String, appConfig: AppConfig) {
-        if (isAppBlocked) return
+        if (isShortsBlocked) return
 
         if (timeManager.isShortsLimitExceeded(packageName, appConfig.shortsLimitMinutes)) {
             isShortsBlocked = true
-            closeShortsVideo()
+            stopSimpleTimer()
             if (!notificationShown) {
                 showNotification(
                     "Shorts limit exceeded",
-                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts"
+                    "You have used ${appConfig.shortsLimitMinutes} minutes of Shorts. Timer stopped."
                 )
                 notificationShown = true
             }
@@ -519,50 +492,11 @@ class LogTrackingService : AccessibilityService() {
         }
 
         if (timeManager.isAppLimitExceeded(packageName, appConfig.dailyLimitMinutes)) {
-            isAppBlocked = true
             showNotification(
                 "App limit exceeded",
-                "You have used ${appConfig.dailyLimitMinutes} minutes in $packageName"
+                "You have used ${appConfig.dailyLimitMinutes} minutes in $packageName. Timer stopped."
             )
-        }
-    }
-
-    private fun closeShortsVideo() {
-        val now = System.currentTimeMillis()
-        if (isClosingInProgress || (now - lastCloseTime < 2000)) {
-            Log.d("Tracker", "Close already in progress or too soon, skipping")
-            return
-        }
-
-        isClosingInProgress = true
-        lastCloseTime = now
-
-        try {
-            Log.d("Tracker", "Closing Shorts/Reels with swipe down")
-
-            val displayMetrics = resources.displayMetrics
-            val screenWidth = displayMetrics.widthPixels
-            val screenHeight = displayMetrics.heightPixels
-
-            val startX = (screenWidth / 2).toFloat()
-            val startY = (screenHeight * 0.2f).toFloat()
-            val endY = (screenHeight * 0.8f).toFloat()
-
-            val path = android.graphics.Path()
-            path.moveTo(startX, startY)
-            path.lineTo(startX, endY)
-
-            val gestureBuilder = GestureDescription.Builder()
-            gestureBuilder.addStroke(GestureDescription.StrokeDescription(path, 0, 400))
-            dispatchGesture(gestureBuilder.build(), null, null)
-
-            Log.d("Tracker", "Swipe down performed")
-        } catch (e: Exception) {
-            Log.e("Tracker", "Close Shorts error: ${e.message}")
-        } finally {
-            handler.postDelayed({
-                isClosingInProgress = false
-            }, 2000)
+            stopSimpleTimer()
         }
     }
 
